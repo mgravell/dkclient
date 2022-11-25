@@ -15,7 +15,7 @@ namespace Demikernel;
 public sealed class DKSocketManager
 {
     private readonly object _pendingItemsSyncLock = new();
-    private readonly List<(long Token, object Tcs)> _pending = new();
+    private readonly List<(long Token, object Tcs, CancellationTokenRegistration Ctr)> _pending = new();
     private bool _doomed = false;
 
     public DKSocketManager()
@@ -23,43 +23,44 @@ public sealed class DKSocketManager
         ThreadPool.UnsafeQueueUserWorkItem(DriveCallback, this); // use non-pool thread? probably should...
     }
 
-    private void Add(long token, object tcs)
+    private void Add(long token, object tcs, CancellationTokenRegistration ctr)
     {
         lock (_pendingItemsSyncLock)
         {
             if (_doomed)
             {
                 TryCancel(tcs);
+                ctr.Unregister();
             }
             else
             {
                 // we can't change what wait_any is doing, so: add to a holding pen,
                 // and add to wait_any on the *next* iteration
-                _pending.Add((token, tcs));
+                _pending.Add((token, tcs, ctr));
                 if (_pending.Count == 1) Monitor.Pulse(_pendingItemsSyncLock); // wake the worker
             }
         }
     }
 
-    static void EnsureCapacity(ref long[] liveTokens, ref object[] liveTasks, int oldCount, int newCount)
+    static void EnsureCapacity(ref long[] liveTokens, ref (object Tcs, CancellationTokenRegistration Ctr)[] liveCompletions, int oldCount, int newCount)
     {
         newCount = (int)BitOperations.RoundUpToPowerOf2((uint)newCount);
         if (liveTokens is null)
         {
             liveTokens = GC.AllocateUninitializedArray<long>(newCount, pinned: true);
-            liveTasks = new object[newCount];
+            liveCompletions = new (object Tcs, CancellationTokenRegistration Ctr)[newCount];
         }
         else if (newCount > liveTokens.Length)
         {
             var newTokens = GC.AllocateArray<long>(newCount, pinned: true);
-            var newTasks = new object[newCount];
+            var newCompletions = new (object Tcs, CancellationTokenRegistration Ctr)[newCount];
             if (oldCount != 0)
             {
                 new Span<long>(liveTokens, 0, oldCount).CopyTo(newTokens);
-                new Span<object>(liveTasks, 0, oldCount).CopyTo(newTasks);
+                new Span<(object Tcs, CancellationTokenRegistration Ctr)>(liveCompletions, 0, oldCount).CopyTo(newCompletions);
             }
             liveTokens = newTokens; // drop the old on the floor
-            liveTasks = newTasks;
+            liveCompletions = newCompletions;
         }
     }
 
@@ -69,8 +70,8 @@ public sealed class DKSocketManager
 
     private unsafe void Drive()
     {
-        long[] liveTokens = Array.Empty<long>();
-        object[] liveTasks = Array.Empty<object>();
+        var liveTokens = Array.Empty<long>();
+        var liveCompletions = Array.Empty<(object Tcs, CancellationTokenRegistration Ctr)>();
         int liveCount = 0;
         Console.WriteLine("[server] entering dedicated work loop");
         try
@@ -85,12 +86,12 @@ public sealed class DKSocketManager
                     if (_doomed) break;
                     if (_pending.Count != 0)
                     {
-                        EnsureCapacity(ref liveTokens, ref liveTasks, liveCount, liveCount + _pending.Count);
+                        EnsureCapacity(ref liveTokens, ref liveCompletions, liveCount, liveCount + _pending.Count);
                         var index = liveCount;
                         foreach (ref readonly var item in CollectionsMarshal.AsSpan(_pending))
                         {
                             liveTokens[index] = item.Token;
-                            liveTasks[index++] = item.Tcs;
+                            liveCompletions[index++] = (item.Tcs, item.Ctr);
                         }
                         liveCount += _pending.Count;
                         _pending.Clear();
@@ -119,23 +120,23 @@ public sealed class DKSocketManager
                 if (qr.Opcode == Opcode.Invalid || offset < 0)
                 {
                     // reset drive (perhaps to add new items)
-                    offset = 0;
                     continue;
                 }
 
                 // right, so we're consuming an item; let's juggle the list
                 // by moving the *last* item into this space (we don't
                 // need to clean up the tokens; they're just integers)
-                var tcs = liveTasks[offset];
+                var completion = liveCompletions[offset];
                 if (liveCount > 1)
                 {
-                    liveTasks[offset] = liveTasks[liveCount - 1];
+                    liveCompletions[offset] = liveCompletions[liveCount - 1];
                 }
                 // decrement the size and allow the task the be collected
-                liveTasks[--liveCount] = default!;
+                liveCompletions[--liveCount] = default;
 
                 // signal async completion of the pending activity
-                TryComplete(tcs, in qr);
+                completion.Ctr.Unregister();
+                TryComplete(completion.Tcs, in qr);
             }
         }
         catch (Exception ex)
@@ -149,16 +150,19 @@ public sealed class DKSocketManager
             lock (_pendingItemsSyncLock)
             {
                 _doomed = true;
-                foreach (var item in _pending)
+                foreach (ref var item in CollectionsMarshal.AsSpan(_pending))
                 {
+                    item.Ctr.Unregister();
                     TryCancel(item.Tcs);
                 }
                 _pending.Clear();
             }
             for (int i = 0; i < liveCount; i++)
             {
-                TryCancel(liveTasks[i]);
-                liveTasks[i] = null!; 
+                ref var completion = ref liveCompletions[i];
+                completion.Ctr.Unregister();
+                TryCancel(completion.Tcs);
+                completion = default; 
             }
             liveCount = 0;
         }
@@ -187,7 +191,10 @@ public sealed class DKSocketManager
             switch (qr.Opcode)
             {
                 case Opcode.Pop:
-                    sga.TrySetResult(qr.sga);
+                    if (!sga.TrySetResult(qr.sga))
+                    {   // already complete (cancellation, etc)
+                        qr.sga.Dispose();
+                    }
                     break;
                 case Opcode.Failed:
                     sga.TrySetException(CreateFailed());
@@ -202,7 +209,10 @@ public sealed class DKSocketManager
             switch (qr.Opcode)
             {
                 case Opcode.Accept:
-                    ar.TrySetResult(qr.ares);
+                    if (!ar.TrySetResult(qr.ares))
+                    {   // already complete (cancellation, etc)
+                        qr.ares.AsSocket().Dispose();
+                    }
                     break;
                 case Opcode.Failed:
                     ar.TrySetException(CreateFailed());
@@ -229,24 +239,46 @@ public sealed class DKSocketManager
             ar.TrySetCanceled();
         }
     }
-
-    internal Task AddSend(in QueueToken pending)
+    static void TryCancel(object? tcs, CancellationToken cancellationToken)
     {
+        if (tcs is TaskCompletionSource raw)
+        {
+            raw.TrySetCanceled(cancellationToken);
+        }
+        else if (tcs is TaskCompletionSource<ScatterGatherArray> sga)
+        {
+            sga.TrySetCanceled(cancellationToken);
+        }
+        else if (tcs is TaskCompletionSource<AcceptResult> ar)
+        {
+            ar.TrySetCanceled(cancellationToken);
+        }
+    }
+
+    static readonly Action<object?, CancellationToken> CancelCallback = TryCancel;
+    internal Task AddSend(in QueueToken pending, CancellationToken cancellationToken = default)
+    {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        Add(pending.qt, tcs);
+        CancellationTokenRegistration ctr = cancellationToken.CanBeCanceled ? cancellationToken.Register(CancelCallback, tcs) : default;
+        Add(pending.qt, tcs, ctr);
         return tcs.Task;
     }
-    internal Task<ScatterGatherArray> AddReceive(in QueueToken pending)
+    internal Task<ScatterGatherArray> AddReceive(in QueueToken pending, CancellationToken cancellationToken = default)
     {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<ScatterGatherArray>(cancellationToken);
         var tcs = new TaskCompletionSource<ScatterGatherArray>(TaskCreationOptions.RunContinuationsAsynchronously);
-        Add(pending.qt, tcs);
+        CancellationTokenRegistration ctr = cancellationToken.CanBeCanceled ? cancellationToken.Register(CancelCallback, tcs) : default;
+        Add(pending.qt, tcs, ctr);
         return tcs.Task;
     }
 
-    internal Task<AcceptResult> AddAccept(in QueueToken pending)
+    internal Task<AcceptResult> AddAccept(in QueueToken pending, CancellationToken cancellationToken = default)
     {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<AcceptResult>(cancellationToken);
         var tcs = new TaskCompletionSource<AcceptResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        Add(pending.qt, tcs);
+        CancellationTokenRegistration ctr = cancellationToken.CanBeCanceled ? cancellationToken.Register(CancelCallback, tcs) : default;
+        Add(pending.qt, tcs, ctr);
         return tcs.Task;
     }
 }
