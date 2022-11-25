@@ -16,28 +16,30 @@ public sealed class DKSocketManager
 {
     private readonly object _pendingItemsSyncLock = new();
     private readonly List<(long Token, object Tcs, CancellationTokenRegistration Ctr)> _pending = new();
-    private bool _doomed = false;
+    private bool _doomed = false, _started = false;
 
-    public DKSocketManager()
-    {
-        ThreadPool.UnsafeQueueUserWorkItem(DriveCallback, this); // use non-pool thread? probably should...
-    }
-
-    private void Add(long token, object tcs, CancellationTokenRegistration ctr)
+    private void Add(long token, object tcs, in CancellationTokenRegistration ctr)
     {
         lock (_pendingItemsSyncLock)
         {
             if (_doomed)
             {
-                TryCancel(tcs);
-                ctr.Unregister();
+                TryCancel(tcs, ctr);
             }
             else
             {
                 // we can't change what wait_any is doing, so: add to a holding pen,
                 // and add to wait_any on the *next* iteration
                 _pending.Add((token, tcs, ctr));
-                if (_pending.Count == 1) Monitor.Pulse(_pendingItemsSyncLock); // wake the worker
+                if (_started)
+                {
+                    if (_pending.Count == 1) Monitor.Pulse(_pendingItemsSyncLock); // wake the worker
+                }
+                else
+                {
+                    _started = true;
+                    ThreadPool.UnsafeQueueUserWorkItem(DriveCallback, this); // use non-pool thread? probably should...
+                }
             }
         }
     }
@@ -152,16 +154,14 @@ public sealed class DKSocketManager
                 _doomed = true;
                 foreach (ref var item in CollectionsMarshal.AsSpan(_pending))
                 {
-                    item.Ctr.Unregister();
-                    TryCancel(item.Tcs);
+                    TryCancel(item.Tcs, item.Ctr);
                 }
                 _pending.Clear();
             }
             for (int i = 0; i < liveCount; i++)
             {
                 ref var completion = ref liveCompletions[i];
-                completion.Ctr.Unregister();
-                TryCancel(completion.Tcs);
+                TryCancel(completion.Tcs, completion.Ctr);
                 completion = default; 
             }
             liveCount = 0;
@@ -224,8 +224,9 @@ public sealed class DKSocketManager
         }
         static Exception CreateFailed() => throw new IOException();
     }
-    static void TryCancel(object tcs)
+    static void TryCancel(object tcs, in CancellationTokenRegistration ctr)
     {
+        ctr.Unregister();
         if (tcs is TaskCompletionSource raw)
         {
             raw.TrySetCanceled();
