@@ -1,0 +1,27 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
+client:
+  connect_to:
+    host: 172.21.111.145
+    port: 8811
+  client:
+    host: 172.21.111.145
+    port: 8811
+server:
+  bind:
+    host: 172.21.111.145
+    port: 8811
+  client:
+    host: 172.21.111.145
+    port: 8811
+catnip:
+  my_ipv4_addr: 172.21.111.145
+  my_link_addr: "00:15:5d:89:ec:39"
+  my_interface_name: "eth0"
+  arp_table:
+    "00:15:5d:89:ec:39": "172.21.111.145"
+dpdk:
+  eal_init: ["-c", "0xff", "-n", "4", "-w", "WW:WW.W","--proc-type=auto"]
+
+# vim: set tabstop=2 shiftwidth=2
