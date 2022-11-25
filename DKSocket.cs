@@ -427,7 +427,7 @@ public readonly struct AcceptResult
         int offset = 0;
         fixed (byte* ptr = &_saddrStart)
         {
-            string Hex = "012345789abcdef";
+            string Hex = "0123456789abcdef";
             for (int i = 0; i < Sizes.SOCKET_ADDRESS; i++)
             {
                 c[offset++] = Hex[ptr[i] & 0x0F];
