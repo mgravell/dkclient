@@ -24,18 +24,18 @@ Console.WriteLine("[server] accept (async)...");
 var pending = socket.AcceptAsync();
 Console.WriteLine(pending);
 
-Task.Run(RunClient);
+_ = Task.Run(RunClient);
 
 Console.WriteLine("[server] wait...");
-var result = pending.Wait();
+var result = await pending; //.Wait();
 
 Console.WriteLine($"[server] accepted from {result}");
-using var other = result.Socket;
+using var other = result.AsSocket();
 Console.WriteLine($"[server] client socket: {other}");
 
 while (true)
 {
-    using var sga = other.Receive();
+    using var sga = await other.ReceiveAsync();
     Console.WriteLine($"[server] received {sga}: {Encoding.ASCII.GetString(sga.FirstSpan)}");
 
     if (sga.IsEmpty) break; // client disconnected
@@ -44,7 +44,7 @@ while (true)
     sga.FirstSpan.CopyTo(resp.FirstSpan);
     resp.FirstSpan.Reverse();
     Console.WriteLine($"[server] sending: {resp}: {Encoding.ASCII.GetString(resp.FirstSpan)}");
-    other.Send(resp);
+    await other.SendAsync(resp);
 }
 
 Console.WriteLine("[server] closing");
