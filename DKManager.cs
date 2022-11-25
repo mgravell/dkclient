@@ -230,20 +230,20 @@ public sealed class DKSocketManager
         }
     }
 
-    internal Task Add(in QueueToken pending)
+    internal Task AddSend(in QueueToken pending)
     {
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Add(pending.qt, tcs);
         return tcs.Task;
     }
-    internal Task<ScatterGatherArray> Add(in SGAToken pending)
+    internal Task<ScatterGatherArray> AddReceive(in QueueToken pending)
     {
         var tcs = new TaskCompletionSource<ScatterGatherArray>(TaskCreationOptions.RunContinuationsAsynchronously);
         Add(pending.qt, tcs);
         return tcs.Task;
     }
 
-    internal Task<AcceptResult> Add(in AcceptToken pending)
+    internal Task<AcceptResult> AddAccept(in QueueToken pending)
     {
         var tcs = new TaskCompletionSource<AcceptResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         Add(pending.qt, tcs);

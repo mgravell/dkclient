@@ -109,32 +109,32 @@ public readonly struct DKSocket : IDisposable
 
     public unsafe ValueTask<AcceptResult> AcceptAsync()
     {
-        Unsafe.SkipInit(out AcceptToken qt);
+        Unsafe.SkipInit(out QueueToken qt);
         Interop.Assert(Interop.accept(&qt.qt, _qd), nameof(Interop.accept));
         // TODO: sync check
-        return new(_manager.Add(qt));
+        return new(_manager.AddAccept(qt));
     }
 
     public unsafe AcceptResult Accept()
     {
-        Unsafe.SkipInit(out AcceptToken qt);
+        Unsafe.SkipInit(out QueueToken qt);
         Interop.Assert(Interop.accept(&qt.qt, _qd), nameof(Interop.accept));
-        return qt.Wait();
+        return qt.WaitAccept();
     }
 
     public unsafe ValueTask<ScatterGatherArray> ReceiveAsync()
     {
-        Unsafe.SkipInit(out SGAToken qt);
+        Unsafe.SkipInit(out QueueToken qt);
         Interop.Assert(Interop.pop(&qt.qt, _qd), nameof(Interop.pop));
         // TODO: sync check
-        return new(_manager.Add(qt));
+        return new(_manager.AddReceive(qt));
     }
 
     public unsafe ScatterGatherArray Receive()
     {
-        Unsafe.SkipInit(out SGAToken qt);
+        Unsafe.SkipInit(out QueueToken qt);
         Interop.Assert(Interop.pop(&qt.qt, _qd), nameof(Interop.pop));
-        return qt.Wait();
+        return qt.WaitReceive();
     }
 
     public unsafe ValueTask SendAsync(in ScatterGatherArray payload) // would nice to be "in", but that needs readonly
@@ -146,7 +146,7 @@ public readonly struct DKSocket : IDisposable
             Interop.Assert(Interop.push(&qt.qt, _qd, ptr), nameof(Interop.push));
         }
         // TODO: sync check
-        return new(_manager.Add(qt));
+        return new(_manager.AddSend(qt));
     }
     public unsafe void Send(in ScatterGatherArray payload)
     {
@@ -156,7 +156,7 @@ public readonly struct DKSocket : IDisposable
         {
             Interop.Assert(Interop.push(&qt.qt, _qd, ptr), nameof(Interop.push));
         }
-        qt.Wait();
+        qt.WaitSend();
     }
 
 
@@ -181,29 +181,14 @@ internal readonly struct QueueToken : IEquatable<QueueToken>
     [FieldOffset(0)]
     internal readonly long qt;
 
-    internal unsafe void Wait()
+    internal unsafe void WaitSend()
     {
         Unsafe.SkipInit(out QueueResult qr);
         Interop.Assert(Interop.wait(&qr, this.qt), nameof(Interop.wait));
+        qr.Assert(Opcode.Push);
     }
 
-    public override string ToString() => $"Queue-token {qt}";
-
-    public override int GetHashCode() => qt.GetHashCode();
-
-    public override bool Equals([NotNullWhen(true)] object? obj)
-        => obj is QueueToken other && other.qt == qt;
-
-    public bool Equals(QueueToken other) => other.qt == qt;
-}
-
-[StructLayout(LayoutKind.Explicit, Pack = 1, Size = sizeof(long))]
-internal readonly struct AcceptToken : IEquatable<AcceptToken>
-{
-    [FieldOffset(0)]
-    internal readonly long qt;
-
-    internal unsafe AcceptResult Wait()
+    internal unsafe AcceptResult WaitAccept()
     {
         Unsafe.SkipInit(out QueueResult qr);
         Interop.Assert(Interop.wait(&qr, this.qt), nameof(Interop.wait));
@@ -211,23 +196,7 @@ internal readonly struct AcceptToken : IEquatable<AcceptToken>
         return qr.ares;
     }
 
-    public override string ToString() => $"Queue-token {qt}";
-
-    public override int GetHashCode() => qt.GetHashCode();
-
-    public override bool Equals([NotNullWhen(true)] object? obj)
-        => obj is AcceptToken other && other.qt == qt;
-
-    public bool Equals(AcceptToken other) => other.qt == qt;
-}
-
-[StructLayout(LayoutKind.Explicit, Pack = 1, Size = sizeof(long))]
-internal readonly struct SGAToken : IEquatable<SGAToken>
-{
-    [FieldOffset(0)]
-    internal readonly long qt;
-
-    internal unsafe ScatterGatherArray Wait()
+    internal unsafe ScatterGatherArray WaitReceive()
     {
         Unsafe.SkipInit(out QueueResult qr);
         Interop.Assert(Interop.wait(&qr, this.qt), nameof(Interop.wait));
@@ -241,9 +210,9 @@ internal readonly struct SGAToken : IEquatable<SGAToken>
     public override int GetHashCode() => qt.GetHashCode();
 
     public override bool Equals([NotNullWhen(true)] object? obj)
-        => obj is SGAToken other && other.qt == qt;
+        => obj is QueueToken other && other.qt == qt;
 
-    public bool Equals(SGAToken other) => other.qt == qt;
+    public bool Equals(QueueToken other) => other.qt == qt;
 }
 
 internal static class Sizes
