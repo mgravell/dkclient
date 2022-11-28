@@ -259,18 +259,20 @@ public unsafe readonly struct ScatterGatherArray : IDisposable
     [FieldOffset(16)] private readonly ScatterGatherSegment _firstSegment; // [Sizes.SCATTER_GATHER_SEGMENT * MAX_SEGMENTS];
     [FieldOffset(32)] private readonly byte _saddrStart; //[Sizes.SOCKET_ADDRESS];
 
+    static void ThrowMultiSegmentNotExpected()
+        => throw new NotSupportedException("Multi-segment buffers not currently anticipated");
+
     public uint Count => _numsegs;
 
 
     public ScatterGatherArray Slice(uint start, uint length)
     {
         static void ThrowOutOfRange() => throw new ArgumentOutOfRangeException();
-        static void ThrowMultiSegment() => throw new NotSupportedException("multi-segment slice is not currently implemented");
         var currentLen = TotalBytes;
         if (start + length > currentLen) ThrowOutOfRange();
         if (length == 0) return default;
 
-        if (_numsegs != 1) ThrowMultiSegment();
+        if (_numsegs != 1) ThrowMultiSegmentNotExpected();
 
         var result = this; // copy
         var typed = &result._firstSegment;
@@ -286,6 +288,7 @@ public unsafe readonly struct ScatterGatherArray : IDisposable
     };
     private bool IsEmptySlow()
     {
+        ThrowMultiSegmentNotExpected(); // but impl shown for future ref
         fixed (ScatterGatherSegment* segs = &_firstSegment)
         {
             for (int i = 0; i < _numsegs; i++)
@@ -312,6 +315,7 @@ public unsafe readonly struct ScatterGatherArray : IDisposable
 
     private uint TotalBytesSlow()
     {
+        ThrowMultiSegmentNotExpected(); // but impl shown for future ref
         uint total = 0;
         fixed (ScatterGatherSegment* segs = &_firstSegment)
         {
@@ -324,10 +328,11 @@ public unsafe readonly struct ScatterGatherArray : IDisposable
     }
 
     public Span<byte> this[int index]
-        => index == 1 & _numsegs != 0 ? _firstSegment.Span : SlowIndexer(index);
+        => index == 0 & _numsegs != 0 ? _firstSegment.Span : SlowIndexer(index);
 
     private Span<byte> SlowIndexer(int index)
     {
+        ThrowMultiSegmentNotExpected(); // but impl shown for future ref
         if (index < 0 || index >= _numsegs) Throw();
 
         fixed (ScatterGatherSegment* segs = &_firstSegment)
