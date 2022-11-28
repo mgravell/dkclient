@@ -137,8 +137,9 @@ public readonly struct DKSocket : IDisposable
         return qt.WaitReceive();
     }
 
-    public unsafe ValueTask SendAsync(in ScatterGatherArray payload) // would nice to be "in", but that needs readonly
+    public unsafe ValueTask SendAsync(in ScatterGatherArray payload)
     {
+        if (payload.IsEmpty) return default;
         payload.AssertValid();
         Unsafe.SkipInit(out QueueToken qt);
         fixed (ScatterGatherArray* ptr = &payload)
@@ -150,6 +151,7 @@ public readonly struct DKSocket : IDisposable
     }
     public unsafe void Send(in ScatterGatherArray payload)
     {
+        if (payload.IsEmpty) return;
         payload.AssertValid();
         Unsafe.SkipInit(out QueueToken qt);
         fixed (ScatterGatherArray* ptr = &payload)
@@ -162,6 +164,7 @@ public readonly struct DKSocket : IDisposable
 
     public ValueTask SendAsync(ReadOnlySpan<byte> payload)
     {
+        if (payload.IsEmpty) return default;
         using var sga = ScatterGatherArray.Create(payload);
         // this looks like we're disposing too soon, but actually it is
         // fine; you can "sgafree" as soon as the "push" has been started
@@ -170,6 +173,7 @@ public readonly struct DKSocket : IDisposable
 
     public void Send(ReadOnlySpan<byte> payload)
     {
+        if (payload.IsEmpty) return;
         using var sga = ScatterGatherArray.Create(payload);
         Send(sga);
     }
@@ -236,6 +240,15 @@ internal readonly unsafe struct ScatterGatherSegment
     public uint Length => _len;
 
     public string Raw => new IntPtr(_buf).ToString();
+
+    internal ScatterGatherSegment UncheckedSlice(uint start, uint length)
+        => new ScatterGatherSegment(_buf + start, length);
+
+    private ScatterGatherSegment(byte* buf, uint len)
+    {
+        _buf = buf;
+        _len = len;
+    }
 }
 [StructLayout(LayoutKind.Explicit, Pack = 1, Size = Sizes.SCATTER_GATHER_ARRAY)]
 public unsafe readonly struct ScatterGatherArray : IDisposable
@@ -243,74 +256,85 @@ public unsafe readonly struct ScatterGatherArray : IDisposable
     public const int MAX_SEGMENTS = 1;
     [FieldOffset(0)] private readonly void* buf;
     [FieldOffset(8)] private readonly uint _numsegs;
-    [FieldOffset(16)] private readonly byte _segsStart; // [Sizes.SCATTER_GATHER_SEGMENT * MAX_SEGMENTS];
+    [FieldOffset(16)] private readonly ScatterGatherSegment _firstSegment; // [Sizes.SCATTER_GATHER_SEGMENT * MAX_SEGMENTS];
     [FieldOffset(32)] private readonly byte _saddrStart; //[Sizes.SOCKET_ADDRESS];
 
     public uint Count => _numsegs;
 
-    public unsafe bool IsEmpty
+
+    public ScatterGatherArray Slice(uint start, uint length)
     {
-        get
+        static void ThrowOutOfRange() => throw new ArgumentOutOfRangeException();
+        static void ThrowMultiSegment() => throw new NotSupportedException("multi-segment slice is not currently implemented");
+        var currentLen = TotalBytes;
+        if (start + length > currentLen) ThrowOutOfRange();
+        if (length == 0) return default;
+
+        if (_numsegs != 1) ThrowMultiSegment();
+
+        var result = this; // copy
+        var typed = &result._firstSegment;
+        *typed = typed->UncheckedSlice(start, length);
+        return result;
+    }
+
+    public bool IsEmpty => _numsegs switch
+    {
+        0 => true,
+        1 => _firstSegment.Length == 0,
+        _ => IsEmptySlow(),
+    };
+    private bool IsEmptySlow()
+    {
+        fixed (ScatterGatherSegment* segs = &_firstSegment)
         {
-            if (_numsegs == 0) return true;
-            fixed (byte* segs = &_segsStart)
+            for (int i = 0; i < _numsegs; i++)
             {
-                var typed = (ScatterGatherSegment*)segs;
-                for (int i = 0; i < _numsegs; i++)
-                {
-                    if ((typed++)->Length != 0) return false;
-                }
+                if (segs[i].Length != 0) return false;
             }
-            return true;
         }
+        return true;
     }
     public bool IsSingleSegment => _numsegs == 1;
 
-    public Span<byte> FirstSpan
+    public Span<byte> FirstSpan => _numsegs switch
     {
-        get
+        0 => default,
+        _ => _firstSegment.Span,
+    };
+
+    public uint TotalBytes => _numsegs switch
+    {
+        0 => 0,
+        1 => _firstSegment.Length,
+        _ => TotalBytesSlow(),
+    };
+
+    private uint TotalBytesSlow()
+    {
+        uint total = 0;
+        fixed (ScatterGatherSegment* segs = &_firstSegment)
         {
-            if (_numsegs == 0) return default;
-            fixed (byte* segs = &_segsStart)
+            for (int i = 0; i < _numsegs; i++)
             {
-                var typed = (ScatterGatherSegment*)segs;
-                return typed[0].Span;
+                total += segs[i].Length;
             }
         }
+        return total;
     }
 
-    public uint TotalBytes
-    {
-        get
-        {
-            ulong totalBytes = 0;
-            if (_numsegs != 0)
-            {
-                fixed (byte* segs = &_segsStart)
-                {
-                    var typed = (ScatterGatherSegment*)segs;
-                    for (int i = 0; i < _numsegs; i++)
-                    {
-                        totalBytes += (typed++)->Length;
-                    }
-                }
-            }
-            return checked((uint)totalBytes);
-        }
-    }
     public Span<byte> this[int index]
-    {
-        get
-        {
-            if (index < 0 || index >= _numsegs) Throw();
-            fixed (byte* segs = &_segsStart)
-            {
-                var typed = (ScatterGatherSegment*)segs;
-                return typed[index].Span;
-            }
+        => index == 1 & _numsegs != 0 ? _firstSegment.Span : SlowIndexer(index);
 
-            static void Throw() => throw new IndexOutOfRangeException();
+    private Span<byte> SlowIndexer(int index)
+    {
+        if (index < 0 || index >= _numsegs) Throw();
+
+        fixed (ScatterGatherSegment* segs = &_firstSegment)
+        {
+            return segs[index].Span;
         }
+        static void Throw() => throw new IndexOutOfRangeException();
     }
 
     public override string ToString()
