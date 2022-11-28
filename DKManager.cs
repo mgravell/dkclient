@@ -76,6 +76,7 @@ public sealed class DKSocketManager
         var liveCompletions = Array.Empty<(object Tcs, CancellationTokenRegistration Ctr)>();
         int liveCount = 0;
         Console.WriteLine("[server] entering dedicated work loop");
+        var perLoopTimeout = new TimeSpec(0, 1000); // 1 microsecond, entirely made up - no logic here
         try
         {
             Unsafe.SkipInit(out QueueResult qr);
@@ -116,13 +117,28 @@ public sealed class DKSocketManager
                 var qts = (long*)Unsafe.AsPointer(ref liveTokens[0]);
                 if (offset < 0 | offset >= liveCount) offset = 0; // ensure valid range
                 // Console.WriteLine($"[server]: wait-any {liveCount}...");
-                Interop.Assert(Interop.wait_any(&qr, &offset, qts, liveCount), nameof(Interop.wait_any));
-
-                // Console.WriteLine($"[server]: wait-any index {offset} reported {qr}...");
-                if (qr.Opcode == Opcode.Invalid || offset < 0)
+                int result;
+                //Console.WriteLine($"wait_any: {liveCount}...");
+                lock (Interop.GlobalLock)
                 {
-                    // reset drive (perhaps to add new items)
+                    result = Interop.wait_any(&qr, &offset, qts, liveCount, &perLoopTimeout);
+                }
+                //Console.WriteLine($"wait_any: got {result}");
+                const int TIMEOUT = 110;
+                if (result == TIMEOUT)
+                {
                     continue;
+                }
+                else
+                {
+                    Interop.Assert(result, nameof(Interop.wait_any));
+
+                    // Console.WriteLine($"[server]: wait-any index {offset} reported {qr}...");
+                    if (qr.Opcode == Opcode.Invalid || offset < 0)
+                    {
+                        // reset drive (perhaps to add new items)
+                        continue;
+                    }
                 }
 
                 // right, so we're consuming an item; let's juggle the list

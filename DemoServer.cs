@@ -26,28 +26,36 @@ sealed class DemoServer
 
     private static X509Certificate2? LoadCert()
     {
-        X509Store store = new X509Store(StoreName.My, StoreLocation.LocalMachine);
-
-        store.Open(OpenFlags.ReadOnly);
-
-        foreach (X509Certificate2 certificate in store.Certificates)
+        try
         {
-            if (certificate.SubjectName.Name == "CN=localhost")
+            X509Store store = new X509Store(StoreName.My, StoreLocation.LocalMachine);
+
+            store.Open(OpenFlags.ReadOnly);
+
+            foreach (X509Certificate2 certificate in store.Certificates)
             {
-                if (string.Equals("bfd6bad3e6c5f3aa67f912ebf9b07423731525ae", certificate.GetCertHashString(), StringComparison.OrdinalIgnoreCase))
+                if (certificate.SubjectName.Name == "CN=localhost")
                 {
-                    return certificate;
+                    if (string.Equals("bfd6bad3e6c5f3aa67f912ebf9b07423731525ae", certificate.GetCertHashString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        return certificate;
+                    }
                 }
             }
+            return null;
         }
-        return null;
+        catch (Exception ex)
+        {
+            Console.WriteLine(ex.Message);
+            return null;
+        }
     }
 
     public int Port { get; }
     public bool Tls { get; }
     public CancellationToken CancellationToken { get; }
 
-    private readonly Socket _listen = new(SocketType.Stream, ProtocolType.Tcp);
+    // private readonly Socket _listen = new(SocketType.Stream, ProtocolType.Tcp);
     public DemoServer(int port, bool tls, CancellationToken cancellationToken)
     {
         Port = port;
@@ -77,9 +85,7 @@ sealed class DemoServer
             Console.WriteLine($"Listening on {ep} (tls: {Tls})...");
             while (!CancellationToken.IsCancellationRequested)
             {
-                Console.WriteLine($"Accepting...");
-                AcceptResult client = socket.Accept();
-                Console.WriteLine($"Accepted {client}");
+                AcceptResult client = await socket.AcceptAsync();
                 ThreadPool.QueueUserWorkItem(quwiCallback, client, false);
             }
         }
@@ -96,7 +102,7 @@ sealed class DemoServer
         var socket = accept.AsSocket();
         try
         {
-            DebugLog($"Accepted from {accept.ToString()} as {socket}");
+            // DebugLog($"Accepted from {accept.ToString()} as {socket}");
             Stream stream = new DKStream(socket, false);
             if (Tls)
             {
@@ -154,7 +160,7 @@ sealed class DemoServer
         }
         finally
         {
-            Console.WriteLine("Closing client...");
+            // Console.WriteLine("Closing client...");
             socket.Dispose();
         }
     }

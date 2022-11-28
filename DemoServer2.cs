@@ -90,10 +90,10 @@ sealed class DemoServer2
             while (!CancellationToken.IsCancellationRequested)
             {
                 Console.WriteLine($"Accepting...");
-                AcceptResult client = socket.Accept();
+                AcceptResult client = await socket.AcceptAsync();
                 Console.WriteLine($"Accepted {client}");
-                HandleAccepted(client);
-                // ThreadPool.QueueUserWorkItem(quwiCallback, client, false);
+                // HandleAccepted(client);
+                ThreadPool.QueueUserWorkItem(quwiCallback, client, false);
             }
         }
         catch (Exception ex)

@@ -102,11 +102,9 @@ internal sealed class DKStream : Stream
     private bool ReadCore()
     {
         Debug.Assert(_readRemaining == 0);
-        DebugLog("Reading (sync)...");
         _readBuffer = _socket.Receive();
         _readOffset = 0;
         _readRemaining = _readBuffer.TotalBytes;
-        DebugLog($"Read (ssync) {_readRemaining} bytes");
         if (_readRemaining == 0)
         {
             _readBuffer.Dispose();
@@ -117,11 +115,9 @@ internal sealed class DKStream : Stream
     private async ValueTask<bool> ReadCoreAsync(CancellationToken cancellationToken)
     {
         Debug.Assert(_readRemaining == 0);
-        DebugLog("Reading (async)...");
         _readBuffer = await _socket.ReceiveAsync(cancellationToken);
         _readOffset = 0;
         _readRemaining = _readBuffer.TotalBytes;
-        DebugLog($"Read (async) {_readRemaining} bytes");
         if (_readRemaining == 0)
         {
             _readBuffer.Dispose();
@@ -147,6 +143,4 @@ internal sealed class DKStream : Stream
         => _socket.SendAsync(buffer.Span, cancellationToken);
 
     // TODO: CopyTo[Async]
-    [Conditional("DEBUG")]
-    private void DebugLog(string message) => Console.WriteLine(message);
 }

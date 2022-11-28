@@ -6,8 +6,8 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-// DemoServer.Execute();
-DemoServer2.Execute();
+DemoServer.Execute();
+// DemoServer2.Execute();
 // await SimpleProgram.RunAsync();
 static class SimpleProgram
 {
