@@ -328,12 +328,12 @@ public unsafe readonly struct ScatterGatherArray : IDisposable
     }
 
     public Span<byte> this[int index]
-        => index == 0 & _numsegs != 0 ? _firstSegment.Span : SlowIndexer(index);
+        => index == 0 & _numsegs != 0 ? _firstSegment.Span : IndexerSlow(index);
 
-    private Span<byte> SlowIndexer(int index)
+    private Span<byte> IndexerSlow(int index)
     {
-        ThrowMultiSegmentNotExpected(); // but impl shown for future ref
         if (index < 0 || index >= _numsegs) Throw();
+        ThrowMultiSegmentNotExpected(); // but impl shown for future ref
 
         fixed (ScatterGatherSegment* segs = &_firstSegment)
         {
