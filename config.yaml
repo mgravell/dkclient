@@ -4,17 +4,17 @@
 client:
   connect_to:
     host: 172.21.111.145
-    port: 8811
+    port: 5245
   client:
     host: 172.21.111.145
-    port: 8811
+    port: 5245
 server:
   bind:
     host: 172.21.111.145
-    port: 8811
+    port: 5245
   client:
     host: 172.21.111.145
-    port: 8811
+    port: 5245
 catnip:
   my_ipv4_addr: 172.21.111.145
   my_link_addr: "00:15:5d:89:ec:39"

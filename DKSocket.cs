@@ -7,6 +7,7 @@ namespace Demikernel;
 using System;
 using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
+using System.Drawing;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -82,6 +83,7 @@ public readonly struct DKSocket : IDisposable
         var qd = Interlocked.Exchange(ref Unsafe.AsRef(in _qd), 0);
         if (qd != 0)
         {
+            Console.WriteLine($"dk:close {qd}");
             Interop.Assert(Interop.close(qd), nameof(Interop.close));
         }
     }
@@ -107,47 +109,54 @@ public readonly struct DKSocket : IDisposable
         Interop.Assert(Interop.bind(_qd, saddr, len), nameof(Interop.bind));
     }
 
-    public unsafe ValueTask<AcceptResult> AcceptAsync()
+    public unsafe ValueTask<AcceptResult> AcceptAsync(CancellationToken cancellationToken = default)
     {
         Unsafe.SkipInit(out QueueToken qt);
+        Console.WriteLine($"dk:accept {_qd}");
         Interop.Assert(Interop.accept(&qt.qt, _qd), nameof(Interop.accept));
         // TODO: sync check
-        return new(_manager.AddAccept(qt));
+        return new(_manager.AddAccept(qt, cancellationToken));
     }
 
     public unsafe AcceptResult Accept()
     {
         Unsafe.SkipInit(out QueueToken qt);
+        Console.WriteLine($"dk:accept {_qd}");
         Interop.Assert(Interop.accept(&qt.qt, _qd), nameof(Interop.accept));
         return qt.WaitAccept();
     }
 
-    public unsafe ValueTask<ScatterGatherArray> ReceiveAsync()
+    public unsafe ValueTask<ScatterGatherArray> ReceiveAsync(CancellationToken cancellationToken = default)
     {
         Unsafe.SkipInit(out QueueToken qt);
+        Console.WriteLine($"dk:pop {_qd}");
         Interop.Assert(Interop.pop(&qt.qt, _qd), nameof(Interop.pop));
+        Console.WriteLine($"dk:pop (complete)");
         // TODO: sync check
-        return new(_manager.AddReceive(qt));
+        return new(_manager.AddReceive(qt, cancellationToken));
     }
 
     public unsafe ScatterGatherArray Receive()
     {
         Unsafe.SkipInit(out QueueToken qt);
+        Console.WriteLine($"dk:pop {_qd}");
         Interop.Assert(Interop.pop(&qt.qt, _qd), nameof(Interop.pop));
+        Console.WriteLine($"dk:pop (complete)");
         return qt.WaitReceive();
     }
 
-    public unsafe ValueTask SendAsync(in ScatterGatherArray payload)
+    public unsafe ValueTask SendAsync(in ScatterGatherArray payload, CancellationToken cancellationToken = default)
     {
         if (payload.IsEmpty) return default;
         payload.AssertValid();
         Unsafe.SkipInit(out QueueToken qt);
         fixed (ScatterGatherArray* ptr = &payload)
         {
+            Console.WriteLine($"dk:push {_qd}");
             Interop.Assert(Interop.push(&qt.qt, _qd, ptr), nameof(Interop.push));
         }
         // TODO: sync check
-        return new(_manager.AddSend(qt));
+        return new(_manager.AddSend(qt, cancellationToken));
     }
     public unsafe void Send(in ScatterGatherArray payload)
     {
@@ -156,19 +165,20 @@ public readonly struct DKSocket : IDisposable
         Unsafe.SkipInit(out QueueToken qt);
         fixed (ScatterGatherArray* ptr = &payload)
         {
+            Console.WriteLine($"dk:push {_qd}");
             Interop.Assert(Interop.push(&qt.qt, _qd, ptr), nameof(Interop.push));
         }
         qt.WaitSend();
     }
 
 
-    public ValueTask SendAsync(ReadOnlySpan<byte> payload)
+    public ValueTask SendAsync(ReadOnlySpan<byte> payload, CancellationToken cancellationToken = default)
     {
         if (payload.IsEmpty) return default;
         using var sga = ScatterGatherArray.Create(payload);
         // this looks like we're disposing too soon, but actually it is
         // fine; you can "sgafree" as soon as the "push" has been started
-        return SendAsync(in sga);
+        return SendAsync(in sga, cancellationToken);
     }
 
     public void Send(ReadOnlySpan<byte> payload)
@@ -370,6 +380,7 @@ public unsafe readonly struct ScatterGatherArray : IDisposable
     public static ScatterGatherArray Create(uint size)
     {
         if (size == 0) Throw();
+        Console.WriteLine($"dk:sgaalloc {size}");
         var sga = Interop.sgaalloc(size);
         sga.AssertValid();
         return sga;
