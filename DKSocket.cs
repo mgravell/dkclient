@@ -587,6 +587,9 @@ public readonly struct AcceptResult
 
     public DKSocket AsSocket(DKSocketManager? manager = null) => new DKSocket(_qd, manager);
 
+    public Stream AsStream(bool ownsSocket = true, DKSocketManager? manager = null)
+        => new DKStream(AsSocket(manager), ownsSocket);
+
     public unsafe void CopyAddressTo(Span<byte> bytes)
     {
         fixed (byte* ptr = &_saddrStart)
