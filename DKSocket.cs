@@ -1,3 +1,5 @@
+#define SYNC_WAIT // can be worth it: excample from bombardier usage sync push: 49021, pop: 9241, accept: 15358
+// #define SYNC_WAIT_COUNT
 using System.Runtime.CompilerServices;
 
 [module: SkipLocalsInit]
@@ -6,7 +8,6 @@ namespace Demikernel;
 
 using System;
 using System.Buffers;
-using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Sockets;
@@ -18,6 +19,19 @@ public readonly struct DKSocket : IDisposable
     private readonly int _qd;
     private readonly DKSocketManager _manager;
     // ~DKSocket() => ReleaseHandle(); // uncomment if we go for class
+
+#if SYNC_WAIT && SYNC_WAIT_COUNT
+    static int s_SyncPush, s_SyncPop, s_SyncAccept;
+    static async Task WriteCounters()
+    {
+        while (true)
+        {
+            await Task.Delay(5000);
+            Console.WriteLine($"sync push: {Volatile.Read(ref s_SyncPush)}, pop: {Volatile.Read(ref s_SyncPop)}, accept: {Volatile.Read(ref s_SyncAccept)}");
+        }
+    }
+    static DKSocket() => Task.Run(WriteCounters);
+#endif
 
     public static unsafe void Initialize(params string[] args)
     {
@@ -135,11 +149,15 @@ public readonly struct DKSocket : IDisposable
     public unsafe ValueTask<AcceptResult> AcceptAsync(CancellationToken cancellationToken = default)
     {
         Unsafe.SkipInit(out QueueToken qt);
+        int result;
+#if SYNC_WAIT
+        int syncResult = -1;
         Unsafe.SkipInit(out QueueResult qr);
-        int result, syncResult = -1;
+#endif
         lock (Interop.GlobalLock)
         {
             result = Interop.accept(&qt.qt, _qd);
+#if SYNC_WAIT
             if (result == 0)
             {
                 fixed (TimeSpec* ptr = &TimeSpec.Zero)
@@ -147,13 +165,19 @@ public readonly struct DKSocket : IDisposable
                     syncResult = Interop.wait(&qr, qt.qt, ptr);
                 }
             }
+#endif
         }
         Interop.Assert(result, nameof(Interop.accept));
+#if SYNC_WAIT
         if (syncResult == 0)
         {
+#if SYNC_WAIT_COUNT
+            Interlocked.Increment(ref s_SyncAccept);
+#endif
             qr.Assert(Opcode.Accept);
             return new(qr.ares);
         }
+#endif
         return new(_manager.AddAccept(qt, cancellationToken));
     }
 
@@ -172,11 +196,15 @@ public readonly struct DKSocket : IDisposable
     public unsafe ValueTask<ScatterGatherArray> ReceiveAsync(CancellationToken cancellationToken = default)
     {
         Unsafe.SkipInit(out QueueToken qt);
+        int result;
+#if SYNC_WAIT
+        int syncResult = -1;
         Unsafe.SkipInit(out QueueResult qr);
-        int result, syncResult = -1;
+#endif
         lock (Interop.GlobalLock)
         {
             result = Interop.pop(&qt.qt, _qd);
+#if SYNC_WAIT
             if (result == 0)
             {
                 fixed (TimeSpec* ptr = &TimeSpec.Zero)
@@ -184,13 +212,19 @@ public readonly struct DKSocket : IDisposable
                     syncResult = Interop.wait(&qr, qt.qt, ptr);
                 }
             }
+#endif
         }
         Interop.Assert(result, nameof(Interop.pop));
+#if SYNC_WAIT
         if (syncResult == 0)
         {
+#if SYNC_WAIT_COUNT
+            Interlocked.Increment(ref s_SyncPop);
+#endif
             qr.Assert(Opcode.Pop);
             return new(qr.sga);
         }
+#endif
         return new(_manager.AddReceive(qt, cancellationToken));
     }
 
@@ -210,13 +244,17 @@ public readonly struct DKSocket : IDisposable
     {
         if (payload.IsEmpty) return default;
         Unsafe.SkipInit(out QueueToken qt);
+        int result;
+#if SYNC_WAIT
+        int syncResult = -1;
         Unsafe.SkipInit(out QueueResult qr);
-        int result, syncResult = -1;
+#endif
         fixed (ScatterGatherArray* ptr = &payload)
         {
             lock (Interop.GlobalLock)
             {
                 result = Interop.push(&qt.qt, _qd, ptr);
+#if SYNC_WAIT
                 if (result == 0)
                 {
                     fixed (TimeSpec* timePtr = &TimeSpec.Zero)
@@ -224,14 +262,20 @@ public readonly struct DKSocket : IDisposable
                         syncResult = Interop.wait(&qr, qt.qt, timePtr);
                     }
                 }
+#endif
             }
         }
         Interop.Assert(result, nameof(Interop.push));
+#if SYNC_WAIT
         if (syncResult == 0)
         {
+#if SYNC_WAIT_COUNT
+            Interlocked.Increment(ref s_SyncPush);
+#endif
             qr.Assert(Opcode.Push);
             return default;
         }
+#endif
         return new(_manager.AddSend(qt, cancellationToken));
     }
     public unsafe void Send(in ScatterGatherArray payload)
