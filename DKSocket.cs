@@ -1,3 +1,5 @@
+#define SYNC_WAIT // can be worth it: excample from bombardier usage sync push: 49021, pop: 9241, accept: 15358
+// #define SYNC_WAIT_COUNT
 using System.Runtime.CompilerServices;
 
 [module: SkipLocalsInit]
@@ -17,6 +19,19 @@ public readonly struct DKSocket : IDisposable
     private readonly int _qd;
     private readonly DKSocketManager _manager;
     // ~DKSocket() => ReleaseHandle(); // uncomment if we go for class
+
+#if SYNC_WAIT && SYNC_WAIT_COUNT
+    static int s_SyncPush, s_SyncPop, s_SyncAccept;
+    static async Task WriteCounters()
+    {
+        while (true)
+        {
+            await Task.Delay(5000);
+            Console.WriteLine($"sync push: {Volatile.Read(ref s_SyncPush)}, pop: {Volatile.Read(ref s_SyncPop)}, accept: {Volatile.Read(ref s_SyncAccept)}");
+        }
+    }
+    static DKSocket() => Task.Run(WriteCounters);
+#endif
 
     public static unsafe void Initialize(params string[] args)
     {
@@ -41,7 +56,12 @@ public readonly struct DKSocket : IDisposable
                 byteOffset += count;
                 lease[byteOffset++] = 0; // NUL terminator
             }
-            Interop.Assert(Interop.init(args.Length, argv), nameof(Interop.init));
+            int result;
+            lock (Interop.GlobalLock)
+            {
+                result = Interop.init(args.Length, argv);
+            }
+            Interop.Assert(result, nameof(Interop.init));
         }
         ArrayPool<byte>.Shared.Return(lease);
     }
@@ -60,8 +80,12 @@ public readonly struct DKSocket : IDisposable
 
     public static unsafe DKSocket Create(AddressFamily addressFamily, SocketType socketType, ProtocolType protocolType, DKSocketManager? manager = null)
     {
-        int qd = 0;
-        Interop.Assert(Interop.socket(&qd, addressFamily, socketType, protocolType), nameof(Interop.socket));
+        int qd = 0, result;
+        lock (Interop.GlobalLock)
+        {
+            result = Interop.socket(&qd, addressFamily, socketType, protocolType);
+        }
+        Interop.Assert(result, nameof(Interop.socket));
         return new DKSocket(qd, manager);
     }
     internal DKSocket(int qd, DKSocketManager? manager)
@@ -82,7 +106,12 @@ public readonly struct DKSocket : IDisposable
         var qd = Interlocked.Exchange(ref Unsafe.AsRef(in _qd), 0);
         if (qd != 0)
         {
-            Interop.Assert(Interop.close(qd), nameof(Interop.close));
+            int result;
+            lock (Interop.GlobalLock)
+            {
+                result = Interop.close(qd);
+            }
+            Interop.Assert(result, nameof(Interop.close));
         }
     }
 
@@ -90,7 +119,12 @@ public readonly struct DKSocket : IDisposable
 
     public void Listen(int backlog)
     {
-        Interop.Assert(Interop.listen(_qd, backlog), nameof(Interop.listen));
+        int result;
+        lock (Interop.GlobalLock)
+        {
+            result = Interop.listen(_qd, backlog);
+        }
+        Interop.Assert(result, nameof(Interop.listen));
     }
 
     public unsafe void Bind(EndPoint endpoint)
@@ -104,71 +138,170 @@ public readonly struct DKSocket : IDisposable
         {
             saddr[i] = socketAddress[i];
         }
-        Interop.Assert(Interop.bind(_qd, saddr, len), nameof(Interop.bind));
+        int result;
+        lock (Interop.GlobalLock)
+        {
+            result = Interop.bind(_qd, saddr, len);
+        }
+        Interop.Assert(result, nameof(Interop.bind));
     }
 
-    public unsafe ValueTask<AcceptResult> AcceptAsync()
+    public unsafe ValueTask<AcceptResult> AcceptAsync(CancellationToken cancellationToken = default)
     {
         Unsafe.SkipInit(out QueueToken qt);
-        Interop.Assert(Interop.accept(&qt.qt, _qd), nameof(Interop.accept));
-        // TODO: sync check
-        return new(_manager.AddAccept(qt));
+        int result;
+#if SYNC_WAIT
+        int syncResult = -1;
+        Unsafe.SkipInit(out QueueResult qr);
+#endif
+        lock (Interop.GlobalLock)
+        {
+            result = Interop.accept(&qt.qt, _qd);
+#if SYNC_WAIT
+            if (result == 0)
+            {
+                fixed (TimeSpec* ptr = &TimeSpec.Zero)
+                {
+                    syncResult = Interop.wait(&qr, qt.qt, ptr);
+                }
+            }
+#endif
+        }
+        Interop.Assert(result, nameof(Interop.accept));
+#if SYNC_WAIT
+        if (syncResult == 0)
+        {
+#if SYNC_WAIT_COUNT
+            Interlocked.Increment(ref s_SyncAccept);
+#endif
+            qr.Assert(Opcode.Accept);
+            return new(qr.ares);
+        }
+#endif
+        return new(_manager.AddAccept(qt, cancellationToken));
     }
 
     public unsafe AcceptResult Accept()
     {
         Unsafe.SkipInit(out QueueToken qt);
-        Interop.Assert(Interop.accept(&qt.qt, _qd), nameof(Interop.accept));
+        int result;
+        lock (Interop.GlobalLock)
+        {
+            result = Interop.accept(&qt.qt, _qd);
+        }
+        Interop.Assert(result, nameof(Interop.accept));
         return qt.WaitAccept();
     }
 
-    public unsafe ValueTask<ScatterGatherArray> ReceiveAsync()
+    public unsafe ValueTask<ScatterGatherArray> ReceiveAsync(CancellationToken cancellationToken = default)
     {
         Unsafe.SkipInit(out QueueToken qt);
-        Interop.Assert(Interop.pop(&qt.qt, _qd), nameof(Interop.pop));
-        // TODO: sync check
-        return new(_manager.AddReceive(qt));
+        int result;
+#if SYNC_WAIT
+        int syncResult = -1;
+        Unsafe.SkipInit(out QueueResult qr);
+#endif
+        lock (Interop.GlobalLock)
+        {
+            result = Interop.pop(&qt.qt, _qd);
+#if SYNC_WAIT
+            if (result == 0)
+            {
+                fixed (TimeSpec* ptr = &TimeSpec.Zero)
+                {
+                    syncResult = Interop.wait(&qr, qt.qt, ptr);
+                }
+            }
+#endif
+        }
+        Interop.Assert(result, nameof(Interop.pop));
+#if SYNC_WAIT
+        if (syncResult == 0)
+        {
+#if SYNC_WAIT_COUNT
+            Interlocked.Increment(ref s_SyncPop);
+#endif
+            qr.Assert(Opcode.Pop);
+            return new(qr.sga);
+        }
+#endif
+        return new(_manager.AddReceive(qt, cancellationToken));
     }
 
     public unsafe ScatterGatherArray Receive()
     {
         Unsafe.SkipInit(out QueueToken qt);
-        Interop.Assert(Interop.pop(&qt.qt, _qd), nameof(Interop.pop));
+        int result;
+        lock (Interop.GlobalLock)
+        {
+            result = Interop.pop(&qt.qt, _qd);
+        }
+        Interop.Assert(result, nameof(Interop.pop));
         return qt.WaitReceive();
     }
 
-    public unsafe ValueTask SendAsync(in ScatterGatherArray payload)
+    public unsafe ValueTask SendAsync(in ScatterGatherArray payload, CancellationToken cancellationToken = default)
     {
         if (payload.IsEmpty) return default;
-        payload.AssertValid();
         Unsafe.SkipInit(out QueueToken qt);
+        int result;
+#if SYNC_WAIT
+        int syncResult = -1;
+        Unsafe.SkipInit(out QueueResult qr);
+#endif
         fixed (ScatterGatherArray* ptr = &payload)
         {
-            Interop.Assert(Interop.push(&qt.qt, _qd, ptr), nameof(Interop.push));
+            lock (Interop.GlobalLock)
+            {
+                result = Interop.push(&qt.qt, _qd, ptr);
+#if SYNC_WAIT
+                if (result == 0)
+                {
+                    fixed (TimeSpec* timePtr = &TimeSpec.Zero)
+                    {
+                        syncResult = Interop.wait(&qr, qt.qt, timePtr);
+                    }
+                }
+#endif
+            }
         }
-        // TODO: sync check
-        return new(_manager.AddSend(qt));
+        Interop.Assert(result, nameof(Interop.push));
+#if SYNC_WAIT
+        if (syncResult == 0)
+        {
+#if SYNC_WAIT_COUNT
+            Interlocked.Increment(ref s_SyncPush);
+#endif
+            qr.Assert(Opcode.Push);
+            return default;
+        }
+#endif
+        return new(_manager.AddSend(qt, cancellationToken));
     }
     public unsafe void Send(in ScatterGatherArray payload)
     {
         if (payload.IsEmpty) return;
-        payload.AssertValid();
         Unsafe.SkipInit(out QueueToken qt);
+        int result;
         fixed (ScatterGatherArray* ptr = &payload)
         {
-            Interop.Assert(Interop.push(&qt.qt, _qd, ptr), nameof(Interop.push));
+            lock (Interop.GlobalLock)
+            {
+                result = Interop.push(&qt.qt, _qd, ptr);
+            }
         }
+        Interop.Assert(result, nameof(Interop.push));
         qt.WaitSend();
     }
 
 
-    public ValueTask SendAsync(ReadOnlySpan<byte> payload)
+    public ValueTask SendAsync(ReadOnlySpan<byte> payload, CancellationToken cancellationToken = default)
     {
         if (payload.IsEmpty) return default;
         using var sga = ScatterGatherArray.Create(payload);
         // this looks like we're disposing too soon, but actually it is
         // fine; you can "sgafree" as soon as the "push" has been started
-        return SendAsync(in sga);
+        return SendAsync(in sga, cancellationToken);
     }
 
     public void Send(ReadOnlySpan<byte> payload)
@@ -188,14 +321,24 @@ internal readonly struct QueueToken : IEquatable<QueueToken>
     internal unsafe void WaitSend()
     {
         Unsafe.SkipInit(out QueueResult qr);
-        Interop.Assert(Interop.wait(&qr, this.qt), nameof(Interop.wait));
+        int result;
+        lock (Interop.GlobalLock)
+        {
+            result = Interop.wait(&qr, this.qt, null);
+        }
+        Interop.Assert(result, nameof(Interop.wait));
         qr.Assert(Opcode.Push);
     }
 
     internal unsafe AcceptResult WaitAccept()
     {
         Unsafe.SkipInit(out QueueResult qr);
-        Interop.Assert(Interop.wait(&qr, this.qt), nameof(Interop.wait));
+        int result;
+        lock (Interop.GlobalLock)
+        {
+            result = Interop.wait(&qr, this.qt, null);
+        }
+        Interop.Assert(result, nameof(Interop.wait));
         qr.Assert(Opcode.Accept);
         return qr.ares;
     }
@@ -203,9 +346,13 @@ internal readonly struct QueueToken : IEquatable<QueueToken>
     internal unsafe ScatterGatherArray WaitReceive()
     {
         Unsafe.SkipInit(out QueueResult qr);
-        Interop.Assert(Interop.wait(&qr, this.qt), nameof(Interop.wait));
+        int result;
+        lock (Interop.GlobalLock)
+        {
+            result = Interop.wait(&qr, this.qt, null);
+        }
+        Interop.Assert(result, nameof(Interop.wait));
         qr.Assert(Opcode.Pop);
-        qr.sga.AssertValid();
         return qr.sga;
     }
 
@@ -345,22 +492,19 @@ public unsafe readonly struct ScatterGatherArray : IDisposable
     public override string ToString()
         => $"{TotalBytes} bytes over {Count} segments";
 
-    internal void AssertValid()
-    {
-        if (_numsegs == 0 | _numsegs > MAX_SEGMENTS) Throw(_numsegs);
-
-        static void Throw(uint numsegs) =>
-            throw new InvalidOperationException($"Invalid segment count: {numsegs}");
-    }
-
     public void Dispose()
     {
         if (!IsEmpty)
         {
+            int result;
             fixed (ScatterGatherArray* ptr = &this)
             {
-                Interop.Assert(Interop.sgafree(ptr), nameof(Interop.sgafree));
+                lock (Interop.GlobalLock)
+                {
+                    result = Interop.sgafree(ptr);
+                }
             }
+            Interop.Assert(result, nameof(Interop.sgafree));
             Unsafe.AsRef(in this) = default; // pure evil, but: we do what we can
         }
     }
@@ -369,12 +513,18 @@ public unsafe readonly struct ScatterGatherArray : IDisposable
     public ref readonly ScatterGatherArray Empty => ref _empty;
     public static ScatterGatherArray Create(uint size)
     {
-        if (size == 0) Throw();
-        var sga = Interop.sgaalloc(size);
-        sga.AssertValid();
-        return sga;
+        if (size == 0) return default;
+        ScatterGatherArray sga;
+        lock (Interop.GlobalLock)
+        {
+            sga = Interop.sgaalloc(size);
+        }
 
-        static void Throw() => throw new ArgumentOutOfRangeException(nameof(size));
+        if (sga._numsegs == 0 | sga._numsegs > MAX_SEGMENTS) Throw(sga._numsegs, size);
+
+        static void Throw(uint numsegs, uint size) =>
+            throw new InvalidOperationException($"Invalid segment count: {numsegs} ({nameof(Create)} requested {size} bytes)");
+        return sga;
     }
 
     public bool TryCopyFrom(ReadOnlySpan<byte> payload)
@@ -437,6 +587,9 @@ public readonly struct AcceptResult
 
     public DKSocket AsSocket(DKSocketManager? manager = null) => new DKSocket(_qd, manager);
 
+    public Stream AsStream(bool ownsSocket = true, DKSocketManager? manager = null)
+        => new DKStream(AsSocket(manager), ownsSocket);
+
     public unsafe void CopyAddressTo(Span<byte> bytes)
     {
         fixed (byte* ptr = &_saddrStart)
@@ -492,6 +645,39 @@ internal readonly struct QueueResult
     internal Exception CreateUnexpected(Opcode expected) => new InvalidOperationException($"Opcode failure; expected {expected}, actually {_opcode}");
 }
 
+[StructLayout(LayoutKind.Explicit, Pack = 1, Size = 16)]
+internal readonly struct TimeSpec
+{
+    [FieldOffset(0)]
+    internal readonly long _seconds;
+    [FieldOffset(8)]
+    internal readonly ulong _nanoseconds;
+
+    internal TimeSpec(long seconds, ulong nanoseconds)
+    {
+        this._seconds = seconds;
+        this._nanoseconds = nanoseconds;
+    }
+
+    private static readonly TimeSpec _zero = new(0, 0);
+
+    internal static ref readonly TimeSpec Zero => ref _zero;
+
+    internal static TimeSpec Create(TimeSpan value)
+    {
+        var ticksSubSecond = value.Ticks % TimeSpan.TicksPerSecond;
+        const long TICKS_PER_NANOSECOND = 100;
+        var seconds = (long)value.TotalSeconds;
+        var nanos = ticksSubSecond / TICKS_PER_NANOSECOND;
+        if (nanos < 0)
+        {
+            seconds--;
+            nanos = nanos + 1_000_000_000;
+        }
+        return new TimeSpec(seconds, (ulong)nanos);
+    }
+}
+
 #pragma warning disable CA1401 // P/Invokes should not be visible
 internal static unsafe class Interop
 {
@@ -506,6 +692,8 @@ internal static unsafe class Interop
         public LibOsException(int err, string cause) : base($"LibOS reported error from '{cause}': {err}")
             => ErrorNumber = err;
     }
+
+    internal static readonly object GlobalLock = new object();
 
     [DllImport("libdemikernel", EntryPoint = "demi_init")]
 
@@ -540,10 +728,10 @@ internal static unsafe class Interop
     public static extern int pop(long* qt, int qd);
 
     [DllImport("libdemikernel", EntryPoint = "demi_wait")]
-    public static extern int wait(QueueResult* qr, long qt);
+    public static extern int wait(QueueResult* qr, long qt, TimeSpec* timeout);
 
     [DllImport("libdemikernel", EntryPoint = "demi_wait_any")]
-    public static extern int wait_any(QueueResult* qr, int* offset, long* qt, int num_qts);
+    public static extern int wait_any(QueueResult* qr, int* offset, long* qt, int num_qts, TimeSpec* timeout);
 
     [DllImport("libdemikernel", EntryPoint = "demi_sgaalloc")]
     public static extern ScatterGatherArray sgaalloc(ulong size);

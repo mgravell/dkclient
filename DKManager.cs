@@ -1,5 +1,4 @@
-﻿using System;
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -20,6 +19,7 @@ public sealed class DKSocketManager
 
     private void Add(long token, object tcs, in CancellationTokenRegistration ctr)
     {
+        var tuple = (token, tcs, ctr);
         lock (_pendingItemsSyncLock)
         {
             if (_doomed)
@@ -30,7 +30,7 @@ public sealed class DKSocketManager
             {
                 // we can't change what wait_any is doing, so: add to a holding pen,
                 // and add to wait_any on the *next* iteration
-                _pending.Add((token, tcs, ctr));
+                _pending.Add(tuple);
                 if (_started)
                 {
                     if (_pending.Count == 1) Monitor.Pulse(_pendingItemsSyncLock); // wake the worker
@@ -50,16 +50,16 @@ public sealed class DKSocketManager
         if (liveTokens is null)
         {
             liveTokens = GC.AllocateUninitializedArray<long>(newCount, pinned: true);
-            liveCompletions = new (object Tcs, CancellationTokenRegistration Ctr)[newCount];
+            liveCompletions = new (object, CancellationTokenRegistration)[newCount];
         }
         else if (newCount > liveTokens.Length)
         {
             var newTokens = GC.AllocateArray<long>(newCount, pinned: true);
-            var newCompletions = new (object Tcs, CancellationTokenRegistration Ctr)[newCount];
+            var newCompletions = new (object, CancellationTokenRegistration)[newCount];
             if (oldCount != 0)
             {
                 new Span<long>(liveTokens, 0, oldCount).CopyTo(newTokens);
-                new Span<(object Tcs, CancellationTokenRegistration Ctr)>(liveCompletions, 0, oldCount).CopyTo(newCompletions);
+                new Span<(object, CancellationTokenRegistration)>(liveCompletions, 0, oldCount).CopyTo(newCompletions);
             }
             liveTokens = newTokens; // drop the old on the floor
             liveCompletions = newCompletions;
@@ -76,6 +76,7 @@ public sealed class DKSocketManager
         var liveCompletions = Array.Empty<(object Tcs, CancellationTokenRegistration Ctr)>();
         int liveCount = 0;
         Console.WriteLine("[server] entering dedicated work loop");
+        var perLoopTimeout = new TimeSpec(0, 1000); // 1 microsecond, entirely made up - no logic here
         try
         {
             Unsafe.SkipInit(out QueueResult qr);
@@ -89,13 +90,11 @@ public sealed class DKSocketManager
                     if (_pending.Count != 0)
                     {
                         EnsureCapacity(ref liveTokens, ref liveCompletions, liveCount, liveCount + _pending.Count);
-                        var index = liveCount;
                         foreach (ref readonly var item in CollectionsMarshal.AsSpan(_pending))
                         {
-                            liveTokens[index] = item.Token;
-                            liveCompletions[index++] = (item.Tcs, item.Ctr);
+                            liveTokens[liveCount] = item.Token;
+                            liveCompletions[liveCount++] = (item.Tcs, item.Ctr);
                         }
-                        liveCount += _pending.Count;
                         _pending.Clear();
                     }
                 }
@@ -112,28 +111,39 @@ public sealed class DKSocketManager
                     }
                 }
 
-                // we're using the pinned heap; we can do this without "fixed"
+                // if (offset < 0 | offset >= liveCount) offset = 0; // ensure valid range
+                offset = 0;
+                //// we're using the pinned heap; we can do this without "fixed"
                 var qts = (long*)Unsafe.AsPointer(ref liveTokens[0]);
-                if (offset < 0 | offset >= liveCount) offset = 0; // ensure valid range
-                // Console.WriteLine($"[server]: wait-any {liveCount}...");
-                Interop.Assert(Interop.wait_any(&qr, &offset, qts, liveCount), nameof(Interop.wait_any));
-
-                // Console.WriteLine($"[server]: wait-any index {offset} reported {qr}...");
-                if (qr.Opcode == Opcode.Invalid || offset < 0)
+                int result;
+                lock (Interop.GlobalLock)
                 {
-                    // reset drive (perhaps to add new items)
+                    result = Interop.wait_any(&qr, &offset, qts, liveCount, &perLoopTimeout);
+                }
+                //Console.WriteLine($"wait_any: got {result}");
+                const int TIMEOUT = 110;
+                if (result == TIMEOUT)
+                {
                     continue;
                 }
 
+                Interop.Assert(result, nameof(Interop.wait_any));
+                //if (qr.Opcode == Opcode.Invalid || offset < 0)
+                //{
+                //    // reset drive (perhaps to add new items)
+                //    continue;
+                //}
+
                 // right, so we're consuming an item; let's juggle the list
-                // by moving the *last* item into this space (we don't
-                // need to clean up the tokens; they're just integers)
+                // by moving the *last* item into this space
                 var completion = liveCompletions[offset];
                 if (liveCount > 1)
                 {
+                    liveTokens[offset] = liveTokens[liveCount - 1];
                     liveCompletions[offset] = liveCompletions[liveCount - 1];
                 }
                 // decrement the size and allow the task the be collected
+                //(we don't need to clean up the tokens; they're just integers)
                 liveCompletions[--liveCount] = default;
 
                 // signal async completion of the pending activity
