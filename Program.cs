@@ -27,70 +27,74 @@ static class SimpleProgram
         Console.WriteLine("[server] listen...");
         socket.Listen(32);
 
+        Console.WriteLine("[server] accept...");
+        using var client = socket.Accept().AsSocket();
+        Console.WriteLine("[server] connected (yay!)");
+
         //Console.WriteLine("[server] accept (async)...");
         //var pending = socket.AcceptAsync();
         //Console.WriteLine(pending);
 
-        _ = Task.Run(RunClient);
+        //_ = Task.Run(RunClient);
 
-        Console.WriteLine("[server] wait...");
-        //var result = await pending; //.Wait();
+        //Console.WriteLine("[server] wait...");
+        ////var result = await pending; //.Wait();
 
-        Console.WriteLine("[server] accept (sync)...");
-        var result = socket.Accept();
+        //Console.WriteLine("[server] accept (sync)...");
+        //var result = socket.Accept();
 
-        Console.WriteLine($"[server] accepted from {result}");
-        using var other = result.AsSocket();
-        Console.WriteLine($"[server] client socket: {other}");
+        //Console.WriteLine($"[server] accepted from {result}");
+        //using var other = result.AsSocket();
+        //Console.WriteLine($"[server] client socket: {other}");
 
-        while (true)
-        {
-            using var sga = await other.ReceiveAsync();
-            Console.WriteLine($"[server] received {sga}: {Encoding.ASCII.GetString(sga.FirstSpan)}");
+        //while (true)
+        //{
+        //    using var sga = await other.ReceiveAsync();
+        //    Console.WriteLine($"[server] received {sga}: {Encoding.ASCII.GetString(sga.FirstSpan)}");
 
-            if (sga.IsEmpty) break; // client disconnected
+        //    if (sga.IsEmpty) break; // client disconnected
 
-            using var resp = ScatterGatherArray.Create(sga.TotalBytes);
-            sga.FirstSpan.CopyTo(resp.FirstSpan);
-            resp.FirstSpan.Reverse();
-            Console.WriteLine($"[server] sending: {resp}: {Encoding.ASCII.GetString(resp.FirstSpan)}");
-            await other.SendAsync(resp);
-        }
+        //    using var resp = ScatterGatherArray.Create(sga.TotalBytes);
+        //    sga.FirstSpan.CopyTo(resp.FirstSpan);
+        //    resp.FirstSpan.Reverse();
+        //    Console.WriteLine($"[server] sending: {resp}: {Encoding.ASCII.GetString(resp.FirstSpan)}");
+        //    await other.SendAsync(resp);
+        //}
 
-        Console.WriteLine("[server] closing");
+        //Console.WriteLine("[server] closing");
 
-        void RunClient()
-        {
-            Console.WriteLine("[client] create...");
-            using var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        //void RunClient()
+        //{
+        //    Console.WriteLine("[client] create...");
+        //    using var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
 
-            Console.WriteLine("[client] connect...");
-            client.Connect(ep);
+        //    Console.WriteLine("[client] connect...");
+        //    client.Connect(ep);
 
-            Console.WriteLine("[client] connected");
-            int offset, read;
-            byte[] buffer;
-            for (int i = 0; i < 5; i++)
-            {
-                buffer = Encoding.ASCII.GetBytes($"Hello, world! ({i})");
-                var wrote = client.Send(buffer);
-                Console.WriteLine($"[client] sent {wrote} bytes: {Encoding.ASCII.GetString(buffer, 0, wrote)}");
-                Array.Clear(buffer);
-                offset = 0;
-                while (offset < buffer.Length && (read = client.Receive(buffer, offset, buffer.Length - offset, SocketFlags.None)) > 0)
-                {
-                    offset += read;
-                }
-                Console.WriteLine($"[client] received {offset} bytes: {Encoding.ASCII.GetString(buffer, 0, offset)}");
-            }
-            client.Shutdown(SocketShutdown.Send);
-            Console.WriteLine($"[client] draining...");
-            buffer = new byte[64];
-            while ((read = client.Receive(buffer, 0, buffer.Length, SocketFlags.None)) > 0)
-            {
-                Console.WriteLine($"[client] received {read} bytes: {Encoding.ASCII.GetString(buffer, 0, read)}");
-            }
-            Console.WriteLine("[client] closing");
-        }
+        //    Console.WriteLine("[client] connected");
+        //    int offset, read;
+        //    byte[] buffer;
+        //    for (int i = 0; i < 5; i++)
+        //    {
+        //        buffer = Encoding.ASCII.GetBytes($"Hello, world! ({i})");
+        //        var wrote = client.Send(buffer);
+        //        Console.WriteLine($"[client] sent {wrote} bytes: {Encoding.ASCII.GetString(buffer, 0, wrote)}");
+        //        Array.Clear(buffer);
+        //        offset = 0;
+        //        while (offset < buffer.Length && (read = client.Receive(buffer, offset, buffer.Length - offset, SocketFlags.None)) > 0)
+        //        {
+        //            offset += read;
+        //        }
+        //        Console.WriteLine($"[client] received {offset} bytes: {Encoding.ASCII.GetString(buffer, 0, offset)}");
+        //    }
+        //    client.Shutdown(SocketShutdown.Send);
+        //    Console.WriteLine($"[client] draining...");
+        //    buffer = new byte[64];
+        //    while ((read = client.Receive(buffer, 0, buffer.Length, SocketFlags.None)) > 0)
+        //    {
+        //        Console.WriteLine($"[client] received {read} bytes: {Encoding.ASCII.GetString(buffer, 0, read)}");
+        //    }
+        //    Console.WriteLine("[client] closing");
+        //}
     }
 }
